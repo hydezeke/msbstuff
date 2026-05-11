@@ -45,11 +45,9 @@ function getListingTags(listingId) {
 
 function renderTags(tags) {
   if (!tags || tags.length === 0) return '';
-  return tags.map(t => {
-    const translated = t.translatedName && t.translatedName !== t.name
-      ? `<span class="auto-translation">${esc(t.translatedName)}</span>`
-      : '';
-    return `<span class="tag" style="background:${esc(t.color)}">${esc(t.name)}${translated}</span>`;
+  return tags.map(tag => {
+    const name = tag.translatedName || tag.name;
+    return `<span class="tag" style="background:${esc(tag.color)}">${esc(name)}</span>`;
   }).join(' ');
 }
 
@@ -73,7 +71,7 @@ function renderTagFilters(allTags, activeTagIds, lang) {
         hx-get="${esc(url)}" hx-target="#listing-results" hx-push-url="true"
         class="tag-filter-toggle${isActive ? ' active' : ''}"
         style="background:${esc(tag.color)}"
-      >${esc(tag.name)}</a>`;
+      >${esc(tag.translatedName || tag.name)}</a>`;
   }).join('');
 
   return `<div class="tag-filters">
@@ -87,7 +85,7 @@ function renderTagFilters(allTags, activeTagIds, lang) {
 // Browse listings
 router.get('/', async (req, res) => {
   const lang = res.locals.lang;
-  const allTags = getAllTags();
+  const allTags = await translateTags(getAllTags(), lang);
 
   const activeTagIds = (req.query.tags || '')
     .split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n) && n > 0);
