@@ -38,11 +38,19 @@ nav {
 }
 nav .nav-brand {
   font-family: 'Playfair Display', Georgia, serif;
-  font-size: 1.3rem;
+  font-size: 1.04rem;
   font-weight: 700;
   color: #fff;
   text-decoration: none;
   letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+.nav-logo {
+  height: 1em;
+  width: auto;
+  filter: brightness(0) invert(1);
 }
 nav .nav-links {
   display: flex; gap: 1rem; align-items: center;

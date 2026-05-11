@@ -6,7 +6,7 @@ function layout(title, content, opts = {}) {
 
   const nav = `
     <nav>
-      <a href="/" class="nav-brand">msb's stuff sharer</a>
+      <a href="/" class="nav-brand"><img src="/logo.png" class="nav-logo" alt="">msb's stuff sharer</a>
       <form method="POST" action="/settings/language" class="lang-form">
         <input type="hidden" name="_csrf" value="${esc(csrfToken || '')}">
         <select name="lang" class="lang-select" onchange="this.form.submit()" title="Language / Idioma">
