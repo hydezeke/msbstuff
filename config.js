@@ -12,6 +12,9 @@ const config = Object.freeze({
     from: process.env.SMTP_FROM || 'noreply@example.com',
   },
   adminEmail: process.env.ADMIN_EMAIL || '',
+  lingvaUrl: (process.env.LINGVA_URL || '').replace(/\/$/, ''),
+  supportedLangs: ['en', 'es'],
+  defaultLang: 'en',
 });
 
 module.exports = config;

@@ -3,11 +3,13 @@ const path = require('path');
 const multer = require('multer');
 const db = require('../db/database');
 const { layout, esc } = require('../views/layout');
+const { t } = require('../i18n/strings');
 const { requireAuth } = require('../middleware/auth');
 const { validateCsrf } = require('../middleware/csrf');
 const { checkHoneypot } = require('../middleware/honeypot');
 const { postLimiter } = require('../middleware/rateLimiter');
 const { sendMail } = require('../services/mailer');
+const { getListingTranslation, translateTags } = require('../services/translator');
 const config = require('../config');
 
 const router = express.Router();
@@ -28,18 +30,10 @@ const upload = multer({
   },
 });
 
-// Fetch all tags with optional active set for rendering
 function getAllTags() {
   return db.prepare('SELECT * FROM tags ORDER BY name').all();
 }
 
-// Fetch tag IDs for a listing
-function getListingTagIds(listingId) {
-  return db.prepare('SELECT tag_id FROM listing_tags WHERE listing_id = ?')
-    .all(listingId).map(r => r.tag_id);
-}
-
-// Fetch full tags for a listing
 function getListingTags(listingId) {
   return db.prepare(`
     SELECT t.* FROM tags t
@@ -49,54 +43,54 @@ function getListingTags(listingId) {
   `).all(listingId);
 }
 
-// Render inline tag pills
 function renderTags(tags) {
   if (!tags || tags.length === 0) return '';
-  return tags.map(t =>
-    `<span class="tag" style="background:${esc(t.color)}">${esc(t.name)}</span>`
-  ).join(' ');
+  return tags.map(t => {
+    const translated = t.translatedName && t.translatedName !== t.name
+      ? `<span class="auto-translation">${esc(t.translatedName)}</span>`
+      : '';
+    return `<span class="tag" style="background:${esc(t.color)}">${esc(t.name)}${translated}</span>`;
+  }).join(' ');
 }
 
-// Render tag filter bar (HTMX-driven)
-function renderTagFilters(allTags, activeTagIds) {
+function timeAgo(ts, lang) {
+  const secs = Math.floor(Date.now() / 1000) - ts;
+  if (secs < 60)   return t('time.just_now', lang);
+  if (secs < 3600) return t('time.minutes', lang, { n: Math.floor(secs / 60) });
+  if (secs < 86400) return t('time.hours', lang, { n: Math.floor(secs / 3600) });
+  return t('time.days', lang, { n: Math.floor(secs / 86400) });
+}
+
+function renderTagFilters(allTags, activeTagIds, lang) {
   const allActive = activeTagIds.length === 0;
-  const clearUrl = '/';
-  const toggles = allTags.map(t => {
-    const isActive = activeTagIds.includes(t.id);
-    // Build new tag set with this tag toggled
+  const toggles = allTags.map(tag => {
+    const isActive = activeTagIds.includes(tag.id);
     const newSet = isActive
-      ? activeTagIds.filter(id => id !== t.id)
-      : [...activeTagIds, t.id];
+      ? activeTagIds.filter(id => id !== tag.id)
+      : [...activeTagIds, tag.id];
     const url = newSet.length === 0 ? '/' : `/?tags=${newSet.join(',')}`;
     return `<a href="${esc(url)}"
-        hx-get="${esc(url)}"
-        hx-target="#listing-results"
-        hx-push-url="true"
+        hx-get="${esc(url)}" hx-target="#listing-results" hx-push-url="true"
         class="tag-filter-toggle${isActive ? ' active' : ''}"
-        style="background:${esc(t.color)}"
-      >${esc(t.name)}</a>`;
+        style="background:${esc(tag.color)}"
+      >${esc(tag.name)}</a>`;
   }).join('');
 
   return `<div class="tag-filters">
-    <a href="${esc(clearUrl)}"
-       hx-get="${esc(clearUrl)}"
-       hx-target="#listing-results"
-       hx-push-url="true"
+    <a href="/" hx-get="/" hx-target="#listing-results" hx-push-url="true"
        class="tag-filter-all${allActive ? ' active' : ''}"
-    >All</a>
+    >${t('browse.filter_all', lang)}</a>
     ${toggles}
   </div>`;
 }
 
 // Browse listings
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
+  const lang = res.locals.lang;
   const allTags = getAllTags();
 
-  // Parse ?tags=1,2,3
   const activeTagIds = (req.query.tags || '')
-    .split(',')
-    .map(s => parseInt(s, 10))
-    .filter(n => !isNaN(n) && n > 0);
+    .split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n) && n > 0);
 
   let listings;
   if (activeTagIds.length > 0) {
@@ -117,46 +111,43 @@ router.get('/', (req, res) => {
     `).all();
   }
 
-  // Attach tags to each listing
-  const listingsWithTags = listings.map(l => ({
-    ...l,
-    tags: getListingTags(l.id),
+  // Fetch tags + translations for each listing in parallel
+  const listingsWithData = await Promise.all(listings.map(async l => {
+    const tags = await translateTags(getListingTags(l.id), lang);
+    const xlat = await getListingTranslation(l, lang);
+    return { ...l, tags, xlat };
   }));
 
-  const cards = listingsWithTags.length === 0
-    ? '<p class="empty-state">No listings yet. Be the first to post!</p>'
-    : `<div class="listing-grid">${listingsWithTags.map(listingCard).join('')}</div>`;
+  const cards = listingsWithData.length === 0
+    ? `<p class="empty-state">${t('browse.empty', lang)}</p>`
+    : `<div class="listing-grid">${listingsWithData.map(l => listingCard(l, lang)).join('')}</div>`;
 
-  // HTMX partial request — return just the cards
-  if (req.headers['hx-request']) {
-    return res.send(cards);
-  }
+  if (req.headers['hx-request']) return res.send(cards);
 
   const flash = req.session.flash ? consumeFlash(req) : null;
-
-  const html = layout('Listings', `
+  const html = layout(t('browse.title', lang), `
     <div class="page-header">
-      <h1>Listings</h1>
-      ${res.locals.currentUser ? '<a href="/listings/new" class="btn btn-primary">Post an Item</a>' : ''}
+      <h1>${t('browse.title', lang)}</h1>
+      ${res.locals.currentUser ? `<a href="/listings/new" class="btn btn-primary">${t('browse.post_btn', lang)}</a>` : ''}
     </div>
-    ${renderTagFilters(allTags, activeTagIds)}
-    <div id="listing-results">
-      ${cards}
-    </div>
-  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken, flash });
+    ${renderTagFilters(allTags, activeTagIds, lang)}
+    <div id="listing-results">${cards}</div>
+  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken, lang, flash });
   res.send(html);
 });
 
 // New listing form
 router.get('/listings/new', requireAuth, (req, res) => {
+  const lang = res.locals.lang;
   const allTags = getAllTags();
+
   const tagCheckboxes = allTags.length === 0
-    ? '<p style="color:var(--text-muted);font-size:0.9rem">No tags yet — an admin can create them at <a href="/admin/tags">Admin → Tags</a>.</p>'
+    ? `<p style="color:var(--text-muted);font-size:0.9rem">${t('post.no_tags', lang)}</p>`
     : `<div class="tag-checkbox-group" id="tag-checkboxes">
-        ${allTags.map(t => `
-          <label class="tag-checkbox-label" style="background:${esc(t.color)}" data-id="${t.id}">
-            <input type="checkbox" name="tags" value="${t.id}">
-            ${esc(t.name)}
+        ${allTags.map(tag => `
+          <label class="tag-checkbox-label" style="background:${esc(tag.color)}" data-id="${tag.id}">
+            <input type="checkbox" name="tags" value="${tag.id}">
+            ${esc(tag.name)}
           </label>
         `).join('')}
        </div>
@@ -168,58 +159,59 @@ router.get('/listings/new', requireAuth, (req, res) => {
          });
        </script>`;
 
-  const html = layout('Post an Item', `
+  const html = layout(t('post.title', lang), `
     <div class="card" style="max-width:580px;margin:0 auto">
-      <h1>Post an Item</h1>
+      <h1>${t('post.title', lang)}</h1>
       <form method="POST" action="/listings" enctype="multipart/form-data">
         <input type="hidden" name="_csrf" value="${esc(res.locals.csrfToken)}">
         <div class="hp-field"><input type="text" name="website" tabindex="-1" autocomplete="off"></div>
         <div class="field">
-          <label for="title">Title</label>
+          <label for="title">${t('post.label_title', lang)}</label>
           <input type="text" id="title" name="title" required maxlength="120">
         </div>
         <div class="field">
-          <label>Tags</label>
+          <label>${t('post.label_tags', lang)}</label>
           ${tagCheckboxes}
-          <p class="hint">Select any that apply.</p>
+          <p class="hint">${t('post.tags_hint', lang)}</p>
         </div>
         <div class="field">
-          <label for="description">Description</label>
+          <label for="description">${t('post.label_desc', lang)}</label>
           <textarea id="description" name="description" maxlength="2000"></textarea>
         </div>
         <div class="field">
-          <label for="photo">Photo (optional, max 5 MB)</label>
+          <label for="photo">${t('post.label_photo', lang)}</label>
           <input type="file" id="photo" name="photo" accept="image/*">
         </div>
         ${req.query.error ? `<p class="error">${esc(req.query.error)}</p>` : ''}
         <div style="display:flex;gap:0.5rem;margin-top:0.25rem">
-          <button type="submit" class="btn btn-primary">Post Item</button>
-          <a href="/" class="btn btn-secondary">Cancel</a>
+          <button type="submit" class="btn btn-primary">${t('post.submit', lang)}</button>
+          <a href="/" class="btn btn-secondary">${t('post.cancel', lang)}</a>
         </div>
       </form>
     </div>
-  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken });
+  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken, lang });
   res.send(html);
 });
 
 // Create listing
 router.post('/listings', requireAuth, postLimiter, upload.single('photo'), validateCsrf, checkHoneypot, (req, res) => {
   const { title, description } = req.body;
+  const lang = res.locals.lang;
+
   if (!title || !title.trim()) {
-    return res.redirect('/listings/new?error=Title+is+required');
+    return res.redirect(`/listings/new?error=${encodeURIComponent(t('post.label_title', lang) + ' required')}`);
   }
 
-  // Parse submitted tag IDs
   let tagIds = [];
   if (req.body.tags) {
-    tagIds = (Array.isArray(req.body.tags) ? req.body.tags : [req.body.tags])
-      .map(id => parseInt(id, 10))
-      .filter(id => !isNaN(id) && id > 0);
-    // Validate all IDs exist
-    const validIds = db.prepare(
-      `SELECT id FROM tags WHERE id IN (${tagIds.map(() => '?').join(',')})`
-    ).all(...tagIds).map(r => r.id);
-    tagIds = validIds;
+    const raw = Array.isArray(req.body.tags) ? req.body.tags : [req.body.tags];
+    tagIds = raw.map(id => parseInt(id, 10)).filter(id => !isNaN(id) && id > 0);
+    if (tagIds.length > 0) {
+      const validIds = db.prepare(
+        `SELECT id FROM tags WHERE id IN (${tagIds.map(() => '?').join(',')})`
+      ).all(...tagIds).map(r => r.id);
+      tagIds = validIds;
+    }
   }
 
   const photoPath = req.file ? `/uploads/${req.file.filename}` : null;
@@ -236,12 +228,22 @@ router.post('/listings', requireAuth, postLimiter, upload.single('photo'), valid
     for (const tagId of tagIds) insertTag.run(listingId, tagId);
   }
 
-  req.session.flash = { type: 'success', message: 'Your item has been posted!' };
+  // Kick off language detection asynchronously (don't await — don't block the response)
+  const { detectAndTranslate } = require('../services/translator');
+  detectAndTranslate(title.trim(), 'en').then(result => {
+    if (result?.detectedSource) {
+      db.prepare('UPDATE listings SET detected_lang = ? WHERE id = ?')
+        .run(result.detectedSource, listingId);
+    }
+  }).catch(() => {});
+
+  req.session.flash = { type: 'success', key: 'flash.item_posted' };
   res.redirect(`/listings/${listingId}`);
 });
 
 // View single listing
-router.get('/listings/:id', (req, res) => {
+router.get('/listings/:id', async (req, res) => {
+  const lang = res.locals.lang;
   const listing = db.prepare(`
     SELECT l.*, u.username FROM listings l
     JOIN users u ON l.user_id = u.id
@@ -249,18 +251,35 @@ router.get('/listings/:id', (req, res) => {
   `).get(req.params.id);
 
   if (!listing) {
-    return res.status(404).send(layout('Not Found', `
-      <div class="card"><h1>Listing not found</h1><p><a href="/">Back to listings</a></p></div>
-    `, { currentUser: res.locals.currentUser }));
+    return res.status(404).send(layout(t('listing.not_found', lang), `
+      <div class="card">
+        <h1>${t('listing.not_found', lang)}</h1>
+        <p><a href="/">${t('listing.back_to_all', lang)}</a></p>
+      </div>
+    `, { currentUser: res.locals.currentUser, lang }));
   }
 
-  const listingTags = getListingTags(listing.id);
+  const [listingTags, xlat] = await Promise.all([
+    translateTags(getListingTags(listing.id), lang),
+    getListingTranslation(listing, lang),
+  ]);
+
   const isOwner = res.locals.currentUser && res.locals.currentUser.id === listing.user_id;
   const flash = req.session.flash ? consumeFlash(req) : null;
 
-  const html = layout(esc(listing.title), `
+  const titleHtml = xlat?.title && xlat.title !== listing.title
+    ? `${esc(listing.title)}<span class="auto-translation">${esc(xlat.title)}</span>`
+    : esc(listing.title);
+
+  const descHtml = listing.description
+    ? (xlat?.description && xlat.description !== listing.description
+        ? `${esc(listing.description)}<span class="auto-translation"> ${esc(xlat.description)}</span>`
+        : esc(listing.description))
+    : '';
+
+  const html = layout(listing.title, `
     <div style="max-width:660px;margin:0 auto">
-      <p style="margin-bottom:0.75rem"><a href="/">← All listings</a></p>
+      <p style="margin-bottom:0.75rem"><a href="/">${t('listing.back', lang)}</a></p>
       ${listing.photo_path
         ? `<img src="${esc(listing.photo_path)}" alt="" style="width:100%;border-radius:10px;margin-bottom:1rem;max-height:420px;object-fit:cover">`
         : ''}
@@ -268,32 +287,30 @@ router.get('/listings/:id', (req, res) => {
         <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.65rem;flex-wrap:wrap">
           ${renderTags(listingTags)}
           <span style="color:var(--text-muted);font-size:0.85rem">
-            Posted by ${esc(listing.username)} · ${timeAgo(listing.created_at)}
+            ${t('listing.posted_by', lang)} ${esc(listing.username)} · ${timeAgo(listing.created_at, lang)}
           </span>
         </div>
-        <h1>${esc(listing.title)}</h1>
-        ${listing.description
-          ? `<p style="margin-top:0.75rem;white-space:pre-wrap;color:var(--text)">${esc(listing.description)}</p>`
-          : ''}
+        <h1>${titleHtml}</h1>
+        ${descHtml ? `<p style="margin-top:0.75rem;white-space:pre-wrap">${descHtml}</p>` : ''}
         <div style="margin-top:1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
           ${res.locals.currentUser && !isOwner
-            ? `<a href="/contact/${listing.id}" class="btn btn-primary">Contact about this item</a>`
+            ? `<a href="/contact/${listing.id}" class="btn btn-primary">${t('listing.contact_btn', lang)}</a>`
             : ''}
           ${!res.locals.currentUser
-            ? `<a href="/login" class="btn btn-primary">Login to contact</a>`
+            ? `<a href="/login" class="btn btn-primary">${t('listing.login_contact', lang)}</a>`
             : ''}
           ${res.locals.currentUser && !isOwner ? `
             <form method="POST" action="/listings/${listing.id}/flag" style="display:inline">
               <input type="hidden" name="_csrf" value="${esc(res.locals.csrfToken)}">
               <button type="submit" class="btn btn-secondary btn-sm"
-                onclick="return confirm('Flag this listing as inappropriate?')">Flag</button>
+                onclick="return confirm('${t('listing.flag_confirm', lang)}')">${t('listing.flag', lang)}</button>
             </form>
           ` : ''}
-          ${isOwner ? '<span style="color:var(--text-muted);font-size:0.9rem">This is your listing</span>' : ''}
+          ${isOwner ? `<span style="color:var(--text-muted);font-size:0.9rem">${t('listing.yours', lang)}</span>` : ''}
         </div>
       </div>
     </div>
-  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken, flash });
+  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken, lang, flash });
   res.send(html);
 });
 
@@ -313,36 +330,34 @@ router.post('/listings/:id/flag', requireAuth, postLimiter, validateCsrf, async 
     text: `Listing #${listing.id} "${listing.title}" was flagged.\nReview at /admin`,
   });
 
-  req.session.flash = { type: 'info', message: 'Thanks — this listing has been flagged for review.' };
+  req.session.flash = { type: 'info', key: 'flash.flagged' };
   res.redirect(`/listings/${listing.id}`);
 });
 
-// ── Helpers ─────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────
 
-function listingCard(l) {
+function listingCard(l, lang) {
   const photo = l.photo_path
     ? `<img src="${esc(l.photo_path)}" alt="${esc(l.title)}" loading="lazy">`
     : `<div class="card-placeholder">📦</div>`;
+
+  // Show faded translation in card title if available
+  const titleHtml = l.xlat?.title && l.xlat.title !== l.title
+    ? `${esc(l.title)}<span class="auto-translation">${esc(l.xlat.title)}</span>`
+    : esc(l.title);
+
   return `
     <div class="listing-card">
       <a href="/listings/${l.id}">${photo}</a>
       <div class="card-body">
         ${l.tags && l.tags.length > 0 ? `<div class="card-tags">${renderTags(l.tags)}</div>` : ''}
-        <p class="card-title"><a href="/listings/${l.id}">${esc(l.title)}</a></p>
-        <p class="card-meta">by ${esc(l.username)} · ${timeAgo(l.created_at)}</p>
+        <p class="card-title"><a href="/listings/${l.id}">${titleHtml}</a></p>
+        <p class="card-meta">${t('listing.posted_by', lang)} ${esc(l.username)} · ${timeAgo(l.created_at, lang)}</p>
         <div class="card-actions">
-          <a href="/listings/${l.id}" class="btn btn-secondary btn-sm">View</a>
+          <a href="/listings/${l.id}" class="btn btn-secondary btn-sm">${t('browse.view', lang)}</a>
         </div>
       </div>
     </div>`;
-}
-
-function timeAgo(ts) {
-  const secs = Math.floor(Date.now() / 1000) - ts;
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 function consumeFlash(req) {

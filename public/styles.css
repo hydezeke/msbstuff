@@ -51,6 +51,39 @@ nav .nav-links {
 nav a { color: #d4ece3; text-decoration: none; font-weight: 500; }
 nav a:hover { color: #fff; }
 
+/* Language selector — minimal, just shows native arrow */
+.lang-form { display: flex; align-items: center; }
+.lang-select {
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.65);
+  font-size: 0.82rem;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0.1rem 0.15rem;
+  appearance: auto;
+  -webkit-appearance: auto;
+}
+.lang-select:hover { color: #fff; }
+.lang-select option { background: var(--teal-dark); color: #fff; }
+
+/* Auto-translation text — faded blue after original */
+.auto-translation {
+  color: #7BA7C4;
+  font-style: italic;
+  font-size: 0.92em;
+  margin-left: 0.4em;
+  font-weight: 400;
+}
+/* On headings the translation drops to a smaller subtitle line */
+h1 .auto-translation {
+  display: block;
+  font-size: 0.6em;
+  margin-left: 0;
+  margin-top: 0.15em;
+  font-family: 'Source Sans 3', system-ui, sans-serif;
+}
+
 .btn-link {
   background: none; border: none; color: #d4ece3; cursor: pointer;
   font-size: 1rem; font-family: inherit; font-weight: 500; padding: 0;

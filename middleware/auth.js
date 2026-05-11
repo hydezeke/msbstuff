@@ -17,9 +17,11 @@ function requireAdmin(req, res, next) {
 
 function loadCurrentUser(req, res, next) {
   if (req.session.userId) {
-    const user = db.prepare('SELECT id, username, is_admin FROM users WHERE id = ?').get(req.session.userId);
+    const user = db.prepare('SELECT id, username, is_admin, preferred_language FROM users WHERE id = ?').get(req.session.userId);
     if (user) {
       res.locals.currentUser = user;
+      // Keep session in sync with account preference
+      if (user.preferred_language) req.session.preferredLang = user.preferred_language;
     } else {
       req.session.destroy(() => {});
     }

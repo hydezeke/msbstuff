@@ -1,11 +1,13 @@
 const express = require('express');
 const session = require('express-session');
+const cookieParser = require('cookie-parser');
 const path = require('path');
 const db = require('./db/database');
 const SqliteStore = require('express-session-better-sqlite3')(session, db);
 const config = require('./config');
 const { injectCsrf } = require('./middleware/csrf');
 const { loadCurrentUser } = require('./middleware/auth');
+const { langMiddleware } = require('./middleware/lang');
 
 const app = express();
 
@@ -13,6 +15,7 @@ app.set('trust proxy', 1);
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.urlencoded({ extended: false }));
+app.use(cookieParser());
 
 app.use(session({
   store: new SqliteStore(),
@@ -29,7 +32,9 @@ app.use(session({
 
 app.use(injectCsrf);
 app.use(loadCurrentUser);
+app.use(langMiddleware);
 
+app.use(require('./routes/settings'));
 app.use(require('./routes/auth'));
 app.use(require('./routes/invite'));
 app.use(require('./routes/listings'));
@@ -38,12 +43,14 @@ app.use(require('./routes/dashboard'));
 app.use(require('./routes/admin'));
 
 app.use((req, res) => {
-  res.status(404).send(require('./views/layout').layout('Not Found', `
+  const { t } = require('./i18n/strings');
+  const lang = res.locals.lang || 'en';
+  res.status(404).send(require('./views/layout').layout('404', `
     <div class="card" style="max-width:400px;margin:2rem auto;text-align:center">
-      <h1>Page not found</h1>
-      <p><a href="/">Go home</a></p>
+      <h1>${t('404.title', lang)}</h1>
+      <p><a href="/">${t('404.home', lang)}</a></p>
     </div>
-  `, { currentUser: res.locals.currentUser }));
+  `, { currentUser: res.locals.currentUser, lang }));
 });
 
 module.exports = app;

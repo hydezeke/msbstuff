@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   is_admin INTEGER NOT NULL DEFAULT 0,
+  preferred_language TEXT NOT NULL DEFAULT 'en',
   created_at INTEGER NOT NULL
 );
 
@@ -23,12 +24,21 @@ CREATE TABLE IF NOT EXISTS tags (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tag_translations (
+  tag_id INTEGER NOT NULL REFERENCES tags(id),
+  lang TEXT NOT NULL,
+  name TEXT NOT NULL,
+  translated_at INTEGER NOT NULL,
+  PRIMARY KEY (tag_id, lang)
+);
+
 CREATE TABLE IF NOT EXISTS listings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   photo_path TEXT,
+  detected_lang TEXT,
   is_deleted INTEGER NOT NULL DEFAULT 0,
   flag_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
@@ -38,6 +48,15 @@ CREATE TABLE IF NOT EXISTS listing_tags (
   listing_id INTEGER NOT NULL REFERENCES listings(id),
   tag_id INTEGER NOT NULL REFERENCES tags(id),
   PRIMARY KEY (listing_id, tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS listing_translations (
+  listing_id INTEGER NOT NULL REFERENCES listings(id),
+  lang TEXT NOT NULL,
+  title TEXT,
+  description TEXT,
+  translated_at INTEGER NOT NULL,
+  PRIMARY KEY (listing_id, lang)
 );
 
 CREATE TABLE IF NOT EXISTS flags (

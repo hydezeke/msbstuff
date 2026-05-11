@@ -1,0 +1,11 @@
+services:
+  lingva:
+    image: thedaviddelta/lingva-translate:latest
+    restart: unless-stopped
+    environment:
+      - dark_theme=false
+      - default_source_lang=auto
+      - default_target_lang=en
+      - api_enabled=true
+    ports:
+      - "127.0.0.1:3001:3000"

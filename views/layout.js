@@ -1,27 +1,36 @@
+const { t } = require('../i18n/strings');
+
 function layout(title, content, opts = {}) {
-  const { currentUser, flash } = opts;
+  const { currentUser, flash, lang: rawLang, csrfToken } = opts;
+  const lang = rawLang || 'en';
+
   const nav = `
     <nav>
       <a href="/" class="nav-brand">msb's stuff sharer</a>
+      <form method="POST" action="/settings/language" class="lang-form">
+        <input type="hidden" name="_csrf" value="${esc(csrfToken || '')}">
+        <select name="lang" class="lang-select" onchange="this.form.submit()" title="Language / Idioma">
+          <option value="en"${lang === 'en' ? ' selected' : ''}>EN</option>
+          <option value="es"${lang === 'es' ? ' selected' : ''}>ES</option>
+        </select>
+      </form>
       <div class="nav-links">
-        <a href="/">Listings</a>
+        <a href="/">${t('nav.listings', lang)}</a>
         ${currentUser
-          ? `<a href="/dashboard">My Items</a>
-             ${currentUser.is_admin ? '<a href="/admin">Admin</a>' : ''}
+          ? `<a href="/dashboard">${t('nav.my_items', lang)}</a>
+             ${currentUser.is_admin ? `<a href="/admin">${t('nav.admin', lang)}</a>` : ''}
              <form method="POST" action="/logout" style="display:inline">
-               <input type="hidden" name="_csrf" value="${opts.csrfToken || ''}">
-               <button type="submit" class="btn-link">Logout (${esc(currentUser.username)})</button>
+               <input type="hidden" name="_csrf" value="${esc(csrfToken || '')}">
+               <button type="submit" class="btn-link">${t('nav.logout', lang)} (${esc(currentUser.username)})</button>
              </form>`
-          : `<a href="/login">Login</a>`}
+          : `<a href="/login">${t('nav.login', lang)}</a>`}
       </div>
     </nav>`;
 
-  const flashHtml = flash
-    ? `<div class="flash flash-${flash.type}">${esc(flash.message)}</div>`
-    : '';
+  const flashHtml = flash ? renderFlash(flash, lang) : '';
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${esc(lang)}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -40,6 +49,16 @@ function layout(title, content, opts = {}) {
   </main>
 </body>
 </html>`;
+}
+
+function renderFlash(flash, lang) {
+  let message;
+  if (flash.key) {
+    message = t(flash.key, lang, flash.params);
+  } else {
+    message = flash.message || '';
+  }
+  return `<div class="flash flash-${esc(flash.type)}">${esc(message)}</div>`;
 }
 
 function esc(str) {
