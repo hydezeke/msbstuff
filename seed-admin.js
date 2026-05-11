@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One-time script to create the first admin account.
+// One-time script to create the first admin account and seed default tags.
 // Usage: node seed-admin.js <username> <password>
 const bcrypt = require('bcryptjs');
 const db = require('./db/database');
@@ -25,5 +25,18 @@ const now = Math.floor(Date.now() / 1000);
 const result = db.prepare('INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?)')
   .run(username, hash, now);
 
-console.log(`Admin user "${username}" created (id=${result.lastInsertRowid})`);
+const adminId = result.lastInsertRowid;
+
+// Seed default tags if none exist
+const tagCount = db.prepare('SELECT COUNT(*) as n FROM tags').get().n;
+if (tagCount === 0) {
+  db.prepare("INSERT INTO tags (name, color, created_by, created_at) VALUES (?, ?, ?, ?)")
+    .run('Free Stuff', '#C98977', adminId, now);
+  db.prepare("INSERT INTO tags (name, color, created_by, created_at) VALUES (?, ?, ?, ?)")
+    .run('Tool Library', '#4A8469', adminId, now);
+  console.log('Default tags "Free Stuff" and "Tool Library" created.');
+}
+
+console.log(`Admin user "${username}" created (id=${adminId})`);
 console.log('You can now log in and generate invite links at /admin/invite');
+console.log('Manage tags at /admin/tags');

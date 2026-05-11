@@ -28,17 +28,86 @@ const upload = multer({
   },
 });
 
-// Browse listings (also used as HTMX partial target)
+// Fetch all tags with optional active set for rendering
+function getAllTags() {
+  return db.prepare('SELECT * FROM tags ORDER BY name').all();
+}
+
+// Fetch tag IDs for a listing
+function getListingTagIds(listingId) {
+  return db.prepare('SELECT tag_id FROM listing_tags WHERE listing_id = ?')
+    .all(listingId).map(r => r.tag_id);
+}
+
+// Fetch full tags for a listing
+function getListingTags(listingId) {
+  return db.prepare(`
+    SELECT t.* FROM tags t
+    JOIN listing_tags lt ON lt.tag_id = t.id
+    WHERE lt.listing_id = ?
+    ORDER BY t.name
+  `).all(listingId);
+}
+
+// Render inline tag pills
+function renderTags(tags) {
+  if (!tags || tags.length === 0) return '';
+  return tags.map(t =>
+    `<span class="tag" style="background:${esc(t.color)}">${esc(t.name)}</span>`
+  ).join(' ');
+}
+
+// Render tag filter bar (HTMX-driven)
+function renderTagFilters(allTags, activeTagIds) {
+  const allActive = activeTagIds.length === 0;
+  const clearUrl = '/';
+  const toggles = allTags.map(t => {
+    const isActive = activeTagIds.includes(t.id);
+    // Build new tag set with this tag toggled
+    const newSet = isActive
+      ? activeTagIds.filter(id => id !== t.id)
+      : [...activeTagIds, t.id];
+    const url = newSet.length === 0 ? '/' : `/?tags=${newSet.join(',')}`;
+    return `<a href="${esc(url)}"
+        hx-get="${esc(url)}"
+        hx-target="#listing-results"
+        hx-push-url="true"
+        class="tag-filter-toggle${isActive ? ' active' : ''}"
+        style="background:${esc(t.color)}"
+      >${esc(t.name)}</a>`;
+  }).join('');
+
+  return `<div class="tag-filters">
+    <a href="${esc(clearUrl)}"
+       hx-get="${esc(clearUrl)}"
+       hx-target="#listing-results"
+       hx-push-url="true"
+       class="tag-filter-all${allActive ? ' active' : ''}"
+    >All</a>
+    ${toggles}
+  </div>`;
+}
+
+// Browse listings
 router.get('/', (req, res) => {
-  const { category } = req.query;
+  const allTags = getAllTags();
+
+  // Parse ?tags=1,2,3
+  const activeTagIds = (req.query.tags || '')
+    .split(',')
+    .map(s => parseInt(s, 10))
+    .filter(n => !isNaN(n) && n > 0);
+
   let listings;
-  if (category === 'give' || category === 'lend') {
+  if (activeTagIds.length > 0) {
+    const placeholders = activeTagIds.map(() => '?').join(',');
     listings = db.prepare(`
-      SELECT l.*, u.username FROM listings l
+      SELECT DISTINCT l.*, u.username FROM listings l
       JOIN users u ON l.user_id = u.id
-      WHERE l.is_deleted = 0 AND l.category = ?
+      JOIN listing_tags lt ON lt.listing_id = l.id
+      WHERE l.is_deleted = 0 AND lt.tag_id IN (${placeholders})
       ORDER BY l.created_at DESC
-    `).all(category);
+    `).all(...activeTagIds);
   } else {
     listings = db.prepare(`
       SELECT l.*, u.username FROM listings l
@@ -48,40 +117,59 @@ router.get('/', (req, res) => {
     `).all();
   }
 
-  const cards = listings.length === 0
+  // Attach tags to each listing
+  const listingsWithTags = listings.map(l => ({
+    ...l,
+    tags: getListingTags(l.id),
+  }));
+
+  const cards = listingsWithTags.length === 0
     ? '<p class="empty-state">No listings yet. Be the first to post!</p>'
-    : `<div class="listing-grid">${listings.map(listingCard).join('')}</div>`;
+    : `<div class="listing-grid">${listingsWithTags.map(listingCard).join('')}</div>`;
 
   // HTMX partial request — return just the cards
   if (req.headers['hx-request']) {
     return res.send(cards);
   }
 
-  const activeFilter = category || 'all';
-  const html = layout('Neighborhood Listings', `
+  const flash = req.session.flash ? consumeFlash(req) : null;
+
+  const html = layout('Listings', `
     <div class="page-header">
-      <h1>Neighborhood Listings</h1>
+      <h1>Listings</h1>
       ${res.locals.currentUser ? '<a href="/listings/new" class="btn btn-primary">Post an Item</a>' : ''}
     </div>
-    <div class="filter-bar"
-         hx-target="#listing-results"
-         hx-push-url="true">
-      <a href="/" hx-get="/" class="${activeFilter === 'all' ? 'active' : ''}">All</a>
-      <a href="/?category=give" hx-get="/?category=give" class="${activeFilter === 'give' ? 'active' : ''}">Free Stuff</a>
-      <a href="/?category=lend" hx-get="/?category=lend" class="${activeFilter === 'lend' ? 'active' : ''}">Tool Library</a>
-    </div>
+    ${renderTagFilters(allTags, activeTagIds)}
     <div id="listing-results">
       ${cards}
     </div>
-  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken,
-       flash: req.session.flash ? consumeFlash(req) : null });
+  `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken, flash });
   res.send(html);
 });
 
 // New listing form
 router.get('/listings/new', requireAuth, (req, res) => {
+  const allTags = getAllTags();
+  const tagCheckboxes = allTags.length === 0
+    ? '<p style="color:var(--text-muted);font-size:0.9rem">No tags yet — an admin can create them at <a href="/admin/tags">Admin → Tags</a>.</p>'
+    : `<div class="tag-checkbox-group" id="tag-checkboxes">
+        ${allTags.map(t => `
+          <label class="tag-checkbox-label" style="background:${esc(t.color)}" data-id="${t.id}">
+            <input type="checkbox" name="tags" value="${t.id}">
+            ${esc(t.name)}
+          </label>
+        `).join('')}
+       </div>
+       <script>
+         document.querySelectorAll('.tag-checkbox-label').forEach(lbl => {
+           lbl.querySelector('input').addEventListener('change', function() {
+             lbl.classList.toggle('checked', this.checked);
+           });
+         });
+       </script>`;
+
   const html = layout('Post an Item', `
-    <div class="card" style="max-width:560px;margin:0 auto">
+    <div class="card" style="max-width:580px;margin:0 auto">
       <h1>Post an Item</h1>
       <form method="POST" action="/listings" enctype="multipart/form-data">
         <input type="hidden" name="_csrf" value="${esc(res.locals.csrfToken)}">
@@ -91,11 +179,9 @@ router.get('/listings/new', requireAuth, (req, res) => {
           <input type="text" id="title" name="title" required maxlength="120">
         </div>
         <div class="field">
-          <label for="category">Type</label>
-          <select id="category" name="category" required>
-            <option value="give">Free to take</option>
-            <option value="lend">Available to borrow</option>
-          </select>
+          <label>Tags</label>
+          ${tagCheckboxes}
+          <p class="hint">Select any that apply.</p>
         </div>
         <div class="field">
           <label for="description">Description</label>
@@ -106,8 +192,10 @@ router.get('/listings/new', requireAuth, (req, res) => {
           <input type="file" id="photo" name="photo" accept="image/*">
         </div>
         ${req.query.error ? `<p class="error">${esc(req.query.error)}</p>` : ''}
-        <button type="submit" class="btn btn-primary">Post Item</button>
-        <a href="/" class="btn btn-secondary" style="margin-left:0.5rem">Cancel</a>
+        <div style="display:flex;gap:0.5rem;margin-top:0.25rem">
+          <button type="submit" class="btn btn-primary">Post Item</button>
+          <a href="/" class="btn btn-secondary">Cancel</a>
+        </div>
       </form>
     </div>
   `, { currentUser: res.locals.currentUser, csrfToken: res.locals.csrfToken });
@@ -116,24 +204,40 @@ router.get('/listings/new', requireAuth, (req, res) => {
 
 // Create listing
 router.post('/listings', requireAuth, postLimiter, upload.single('photo'), validateCsrf, checkHoneypot, (req, res) => {
-  const { title, category, description } = req.body;
+  const { title, description } = req.body;
   if (!title || !title.trim()) {
     return res.redirect('/listings/new?error=Title+is+required');
   }
-  if (!['give', 'lend'].includes(category)) {
-    return res.redirect('/listings/new?error=Invalid+category');
+
+  // Parse submitted tag IDs
+  let tagIds = [];
+  if (req.body.tags) {
+    tagIds = (Array.isArray(req.body.tags) ? req.body.tags : [req.body.tags])
+      .map(id => parseInt(id, 10))
+      .filter(id => !isNaN(id) && id > 0);
+    // Validate all IDs exist
+    const validIds = db.prepare(
+      `SELECT id FROM tags WHERE id IN (${tagIds.map(() => '?').join(',')})`
+    ).all(...tagIds).map(r => r.id);
+    tagIds = validIds;
   }
 
   const photoPath = req.file ? `/uploads/${req.file.filename}` : null;
   const now = Math.floor(Date.now() / 1000);
 
   const result = db.prepare(`
-    INSERT INTO listings (user_id, title, description, category, photo_path, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(req.session.userId, title.trim(), (description || '').trim(), category, photoPath, now);
+    INSERT INTO listings (user_id, title, description, photo_path, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(req.session.userId, title.trim(), (description || '').trim(), photoPath, now);
+
+  const listingId = result.lastInsertRowid;
+  if (tagIds.length > 0) {
+    const insertTag = db.prepare('INSERT OR IGNORE INTO listing_tags (listing_id, tag_id) VALUES (?, ?)');
+    for (const tagId of tagIds) insertTag.run(listingId, tagId);
+  }
 
   req.session.flash = { type: 'success', message: 'Your item has been posted!' };
-  res.redirect(`/listings/${result.lastInsertRowid}`);
+  res.redirect(`/listings/${listingId}`);
 });
 
 // View single listing
@@ -150,30 +254,42 @@ router.get('/listings/:id', (req, res) => {
     `, { currentUser: res.locals.currentUser }));
   }
 
+  const listingTags = getListingTags(listing.id);
   const isOwner = res.locals.currentUser && res.locals.currentUser.id === listing.user_id;
   const flash = req.session.flash ? consumeFlash(req) : null;
 
   const html = layout(esc(listing.title), `
-    <div style="max-width:640px;margin:0 auto">
+    <div style="max-width:660px;margin:0 auto">
       <p style="margin-bottom:0.75rem"><a href="/">← All listings</a></p>
-      ${listing.photo_path ? `<img src="${esc(listing.photo_path)}" alt="" style="width:100%;border-radius:8px;margin-bottom:1rem;max-height:400px;object-fit:cover">` : ''}
+      ${listing.photo_path
+        ? `<img src="${esc(listing.photo_path)}" alt="" style="width:100%;border-radius:10px;margin-bottom:1rem;max-height:420px;object-fit:cover">`
+        : ''}
       <div class="card">
-        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
-          <span class="badge badge-${esc(listing.category)}">${listing.category === 'give' ? 'Free to take' : 'Available to borrow'}</span>
-          <span style="color:#888;font-size:0.85rem">Posted by ${esc(listing.username)} · ${timeAgo(listing.created_at)}</span>
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.65rem;flex-wrap:wrap">
+          ${renderTags(listingTags)}
+          <span style="color:var(--text-muted);font-size:0.85rem">
+            Posted by ${esc(listing.username)} · ${timeAgo(listing.created_at)}
+          </span>
         </div>
         <h1>${esc(listing.title)}</h1>
-        ${listing.description ? `<p style="margin-top:0.75rem;white-space:pre-wrap">${esc(listing.description)}</p>` : ''}
-        <div style="margin-top:1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap">
-          ${res.locals.currentUser && !isOwner ? `<a href="/contact/${listing.id}" class="btn btn-primary">Contact about this item</a>` : ''}
-          ${!res.locals.currentUser ? `<a href="/login" class="btn btn-primary">Login to contact</a>` : ''}
+        ${listing.description
+          ? `<p style="margin-top:0.75rem;white-space:pre-wrap;color:var(--text)">${esc(listing.description)}</p>`
+          : ''}
+        <div style="margin-top:1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+          ${res.locals.currentUser && !isOwner
+            ? `<a href="/contact/${listing.id}" class="btn btn-primary">Contact about this item</a>`
+            : ''}
+          ${!res.locals.currentUser
+            ? `<a href="/login" class="btn btn-primary">Login to contact</a>`
+            : ''}
           ${res.locals.currentUser && !isOwner ? `
             <form method="POST" action="/listings/${listing.id}/flag" style="display:inline">
               <input type="hidden" name="_csrf" value="${esc(res.locals.csrfToken)}">
-              <button type="submit" class="btn btn-secondary btn-sm" onclick="return confirm('Flag this listing as inappropriate?')">Flag</button>
+              <button type="submit" class="btn btn-secondary btn-sm"
+                onclick="return confirm('Flag this listing as inappropriate?')">Flag</button>
             </form>
           ` : ''}
-          ${isOwner ? '<span style="color:#888;font-size:0.9rem">This is your listing</span>' : ''}
+          ${isOwner ? '<span style="color:var(--text-muted);font-size:0.9rem">This is your listing</span>' : ''}
         </div>
       </div>
     </div>
@@ -193,7 +309,7 @@ router.post('/listings/:id/flag', requireAuth, postLimiter, validateCsrf, async 
 
   await sendMail({
     to: config.adminEmail,
-    subject: `[MSB Stuff] Listing flagged: ${listing.title}`,
+    subject: `[msb's stuff sharer] Listing flagged: ${listing.title}`,
     text: `Listing #${listing.id} "${listing.title}" was flagged.\nReview at /admin`,
   });
 
@@ -201,16 +317,18 @@ router.post('/listings/:id/flag', requireAuth, postLimiter, validateCsrf, async 
   res.redirect(`/listings/${listing.id}`);
 });
 
+// ── Helpers ─────────────────────────────────────────────
+
 function listingCard(l) {
   const photo = l.photo_path
     ? `<img src="${esc(l.photo_path)}" alt="${esc(l.title)}" loading="lazy">`
-    : `<div style="height:120px;background:#e8e8e0;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:2rem">📦</div>`;
+    : `<div class="card-placeholder">📦</div>`;
   return `
     <div class="listing-card">
       <a href="/listings/${l.id}">${photo}</a>
       <div class="card-body">
-        <div><span class="badge badge-${esc(l.category)}">${l.category === 'give' ? 'Free' : 'Borrow'}</span></div>
-        <p class="card-title"><a href="/listings/${l.id}" style="text-decoration:none;color:inherit">${esc(l.title)}</a></p>
+        ${l.tags && l.tags.length > 0 ? `<div class="card-tags">${renderTags(l.tags)}</div>` : ''}
+        <p class="card-title"><a href="/listings/${l.id}">${esc(l.title)}</a></p>
         <p class="card-meta">by ${esc(l.username)} · ${timeAgo(l.created_at)}</p>
         <div class="card-actions">
           <a href="/listings/${l.id}" class="btn btn-secondary btn-sm">View</a>

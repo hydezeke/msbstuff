@@ -15,16 +15,29 @@ CREATE TABLE IF NOT EXISTS invite_tokens (
   used_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS tags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  color TEXT NOT NULL DEFAULT '#888888',
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS listings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  category TEXT NOT NULL CHECK(category IN ('give', 'lend')),
   photo_path TEXT,
   is_deleted INTEGER NOT NULL DEFAULT 0,
   flag_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS listing_tags (
+  listing_id INTEGER NOT NULL REFERENCES listings(id),
+  tag_id INTEGER NOT NULL REFERENCES tags(id),
+  PRIMARY KEY (listing_id, tag_id)
 );
 
 CREATE TABLE IF NOT EXISTS flags (
