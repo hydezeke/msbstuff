@@ -17,6 +17,7 @@
     "express-session": "^1.18.0",
     "express-session-better-sqlite3": "^1.2.1",
     "multer": "^2.1.1",
-    "nodemailer": "^8.0.7"
+    "nodemailer": "^8.0.7",
+    "sharp": "^0.34.5"
   }
 }

@@ -1,6 +1,8 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const multer = require('multer');
+const sharp = require('sharp');
 const db = require('../db/database');
 const { layout, esc } = require('../views/layout');
 const { t } = require('../i18n/strings');
@@ -14,21 +16,27 @@ const config = require('../config');
 
 const router = express.Router();
 
-const storage = multer.diskStorage({
-  destination: path.join(__dirname, '../public/uploads'),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  },
-});
+const UPLOADS_DIR = path.join(__dirname, '../public/uploads');
+
 const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     cb(null, allowed.includes(file.mimetype));
   },
 });
+
+async function saveCompressedImage(file) {
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+  const dest = path.join(UPLOADS_DIR, filename);
+  await sharp(file.buffer)
+    .rotate()
+    .resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 80 })
+    .toFile(dest);
+  return filename;
+}
 
 function getAllTags() {
   return db.prepare('SELECT * FROM tags ORDER BY name').all();
@@ -192,7 +200,7 @@ router.get('/listings/new', requireAuth, (req, res) => {
 });
 
 // Create listing
-router.post('/listings', requireAuth, postLimiter, upload.single('photo'), validateCsrf, checkHoneypot, (req, res) => {
+router.post('/listings', requireAuth, postLimiter, upload.single('photo'), validateCsrf, checkHoneypot, async (req, res) => {
   const { title, description } = req.body;
   const lang = res.locals.lang;
 
@@ -212,7 +220,11 @@ router.post('/listings', requireAuth, postLimiter, upload.single('photo'), valid
     }
   }
 
-  const photoPath = req.file ? `/uploads/${req.file.filename}` : null;
+  let photoPath = null;
+  if (req.file) {
+    const filename = await saveCompressedImage(req.file);
+    photoPath = `/uploads/${filename}`;
+  }
   const now = Math.floor(Date.now() / 1000);
 
   const result = db.prepare(`
